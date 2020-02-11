@@ -6,3 +6,5 @@
 
 - Установить нужную температуру - "Heater_Floor/Set_Temp"
 - Включить или выключить канал - "Heater_Floor/Set_Chanel"
+- Публикуется текущая температура канала (n) - "Heater_Floor/Real_Temp_(n)"
+- Публикуется текущее состояние канала (n) - "Heater_Floor/Status_CHN_(n)"
