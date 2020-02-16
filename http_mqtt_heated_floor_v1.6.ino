@@ -26,6 +26,8 @@ float val_f[7] = {0,0,0,0,0,0,0}; //Отфильтрованные
 unsigned long filter_timer;
 unsigned long status_timer;
 unsigned long send_timer;
+unsigned long reconnect_timer;
+unsigned long error_timer;
 char tmp[10];
 char tmp1[10];
   unsigned char* OutputStr = new unsigned char[50];
@@ -43,12 +45,14 @@ char tmp1[10];
 
 //Время через которое отправлять показания по MQTT
 #define TimeSend 10000 //Каждые 10 секунд
+#define ReconnectTime 5000 //При обрыве связи повторять попытку подключения каждые 5 секунд
 
 #define ID_CONNECT "Heater_Floor"
 
 int Floor[7] = {0,3,4,5,6,7,8};  //Номера выходов на реле
 int Floor_status[7] = {0,0,0,0,0,0,0};  //Статус разрешения включения теплого пола 0 - выключено, 1 - включено
 int Blocked[7] = {0,0,0,0,0,0,0};  //Блоктровка включения пола если что то произошло
+boolean ErrorConnect = false;
 
 //Определим температуру по умолчанию равной 22 градуса
 float Set_temp[7] = {22.0,22.0,22.0,22.0,22.0,22.0,22.0};
@@ -76,7 +80,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String strPayload = String((char*)payload);
 
   //обработка принятых сообщений
-  if ((strTopic == "Heater_Floor/Set_Temp") || (strTopic == "Heater_Floor/Set_Chanel"))
+  if ((strTopic == "Heater_Floor/SET/Set_Temp") || (strTopic == "Heater_Floor/SET/Set_Chanel"))
       {
 //      Serial.println("Input valve_1 = " + strPayload);
       //Servo_Valve_1.write(map(strPayload.toInt(),0,100,0,180));
@@ -94,13 +98,13 @@ PubSubClient client_mqtt(server_mqtt, 1883, callback, ethClient);
 
 //Процедура переподключения
 void reconnect() {
-  while (!client_mqtt.connected()) {
+  if (!client_mqtt.connected()) {
     if (client_mqtt.connect(ID_CONNECT)) {
-      client_mqtt.subscribe("Heater_Floor/#");
+      client_mqtt.subscribe("Heater_Floor/SET/#");
       client_mqtt.publish("Heater_Floor/Info", "Reconnect");
-    } else {
+//    } else {
 //      Serial.println("SERVER CONNECTION IS LOST!!!");
-      delay(5000);
+//      delay(5000);
     }
   }
 }
@@ -254,7 +258,7 @@ for (int j=1;j<=6;j++){
 //----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 void loop() {
   
-// прослушиваем входящих клиентов:
+// прослушиваем входящих клиентов по протоколу HTTP:
 EthernetClient client = server.available();
   if (client) {
 //     Serial.println("new client");  //  "новый клиент"
@@ -307,12 +311,34 @@ EthernetClient client = server.available();
         client.stop();
 //        Serial.println("client disonnected");  //  "Клиент отключен"
      }
+
+
 //Проверяем подключены ли к серверу MQTT
 if (!client_mqtt.connected()) {
-    reconnect();
+  if (millis() - reconnect_timer > ReconnectTime){
+    reconnect_timer = millis(); //сброс таймера
+    ErrorConnect = true;
+    reconnect(); //Переподключение
   }
-  
-  client_mqtt.loop();//Цикличная обработка соединения с сервером MQTT
+  if (millis() - error_timer > 1000){
+    error_timer = millis(); //сброс таймера
+    if (digitalRead(ErrorLED) == LOW)
+          {
+            digitalWrite( ErrorLED, HIGH);
+          } else{
+            digitalWrite( ErrorLED, LOW);
+          }
+  }
+  } else {
+      client_mqtt.loop();//Цикличная обработка соединения с сервером MQTT
+      ErrorConnect = false;
+      if (digitalRead(ErrorLED) == HIGH)
+          {
+            digitalWrite( ErrorLED, LOW);
+          }
+  }
+
+
 //**************************************************************
 //******Выполняется всегда, вне зависимости от подключения *****
 //**************************************************************
@@ -350,7 +376,7 @@ if (millis() - filter_timer > FILTER_STEP)
 
  //Проверка на обрыв или короткое замыкание датчика примерно раз в секунду при условии включенного нагрева
  //если нагрев выключен проверка не ведется
-if (millis() - status_timer > 1000) 
+if (millis() - status_timer > 500) 
   {
     status_timer = millis();    // сброс таймера
     for (int g=1; g<7; g++){
@@ -372,7 +398,7 @@ if (millis() - status_timer > 1000)
   }
 
 //Отправка значений по MQTT
-if (millis() - send_timer > TimeSend) 
+if ((millis() - send_timer > TimeSend) && (client_mqtt.connected()))
   {
     send_timer = millis();    // сброс таймера
     BufStr = "";
@@ -383,7 +409,14 @@ if (millis() - send_timer > TimeSend)
       BufStr.getBytes(OutputStr, 50, 0);
       //-------------------------------------------------------
       client_mqtt.publish(OutputStr, tmp1);
-      delay(50);
+      delay(30);
+      dtostrf(Set_temp[g], 2, 2, tmp1);
+      //-------------------------------------------------------
+      BufStr = "Heater_Floor/Setting_Temp_"+String(g);
+      BufStr.getBytes(OutputStr, 50, 0);
+      //-------------------------------------------------------
+      client_mqtt.publish(OutputStr, tmp1);
+      delay(30);      
       BufStr = "Heater_Floor/Status_CHN_"+String(g);
       BufStr.getBytes(OutputStr, 50, 0);
         if (Floor_status[g])
@@ -394,7 +427,7 @@ if (millis() - send_timer > TimeSend)
           {
             client_mqtt.publish(OutputStr, "OFF");
           }
-      delay(50);
+      delay(30);
     }
   }
 delay(1);
